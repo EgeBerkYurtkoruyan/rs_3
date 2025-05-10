@@ -1,58 +1,38 @@
 import torch
 import torch.nn as nn
-from transformers import BertModel, BertConfig
+from utils.config import EMBED_DIM, NUM_HEADS, NUM_LAYERS, DROPOUT
 
 class BERT4Rec(nn.Module):
-    def __init__(self, num_items, max_seq_len=20, hidden_size=256, num_layers=2, num_heads=2, dropout=0.1):
+    def __init__(self, num_items, embed_dim=EMBED_DIM, num_layers=NUM_LAYERS,
+                 num_heads=NUM_HEADS, dropout=DROPOUT):
         super(BERT4Rec, self).__init__()
-        self.num_items = num_items
-        self.max_seq_len = max_seq_len
-        self.hidden_size = hidden_size
 
-        # Define a special token ID for masking
-        self.mask_token_id = num_items  # Assuming item IDs range from 1 to num_items
-        vocab_size = num_items + 1  # Including the mask token
+        self.item_embedding = nn.Embedding(num_items + 2, embed_dim, padding_idx=0)
 
-        # Embedding layers
-        self.item_embedding = nn.Embedding(vocab_size, hidden_size, padding_idx=0)
-        self.position_embedding = nn.Embedding(max_seq_len, hidden_size)
+        # Use large-enough max positional embedding to support variable-length sequences
+        self.pos_embedding = nn.Embedding(512, embed_dim)
 
-        # BERT configuration
-        config = BertConfig(
-            vocab_size=vocab_size,
-            hidden_size=hidden_size,
-            num_hidden_layers=num_layers,
-            num_attention_heads=num_heads,
-            intermediate_size=hidden_size * 4,
-            max_position_embeddings=max_seq_len,
-            hidden_dropout_prob=dropout,
-            attention_probs_dropout_prob=dropout
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=embed_dim,
+            nhead=num_heads,
+            dim_feedforward=embed_dim * 4,
+            dropout=dropout,
+            activation='gelu',
+            batch_first=True
         )
+        self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
 
-        # BERT model
-        self.bert = BertModel(config)
+        self.norm = nn.LayerNorm(embed_dim)
+        self.dropout = nn.Dropout(dropout)
+        self.output = nn.Linear(embed_dim, num_items + 2)
 
-        # Output layer to project hidden states to item vocabulary
-        self.output_layer = nn.Linear(hidden_size, num_items)
+    def forward(self, x, mask):
+        # x: [batch_size, seq_len]
+        seq_len = x.size(1)
+        positions = torch.arange(0, seq_len).unsqueeze(0).to(x.device)  # shape: [1, seq_len]
 
-    def forward(self, input_ids, attention_mask):
-        """
-        input_ids: Tensor of shape [batch_size, seq_len]
-        attention_mask: Tensor of shape [batch_size, seq_len]
-        """
-        seq_length = input_ids.size(1)
-        position_ids = torch.arange(seq_length, dtype=torch.long, device=input_ids.device)
-        position_ids = position_ids.unsqueeze(0).expand_as(input_ids)
+        x = self.item_embedding(x) + self.pos_embedding(positions)
+        x = self.norm(self.dropout(x))
+        x = self.transformer(x, src_key_padding_mask=mask)
 
-        # Compute embeddings
-        item_embeds = self.item_embedding(input_ids)
-        position_embeds = self.position_embedding(position_ids)
-        embeddings = item_embeds + position_embeds
-
-        # Pass through BERT
-        outputs = self.bert(inputs_embeds=embeddings, attention_mask=attention_mask)
-        sequence_output = outputs.last_hidden_state  # [batch_size, seq_len, hidden_size]
-
-        # Compute logits over the item vocabulary
-        logits = self.output_layer(sequence_output)  # [batch_size, seq_len, num_items]
-        return logits
+        return self.output(x)  # shape: [batch_size, seq_len, num_items + 2]
