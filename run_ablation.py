@@ -9,17 +9,17 @@ BASE_CONFIG = {
     "num_heads": 4,
     "dropout": 0.2,
     "mask_prob": 0.2,
-    "epochs": 1,
+    "epochs": 40,
     "seq_len": 20
 }
 
 # Define ablation ranges
 ABLATION_SPACE = {
-    "embed_dim": [256, 512,1024],
+    "embed_dim": [256, 512,1024], # running
     "num_layers": [4,5,6],
     "num_heads": [2, 4, 8],
     "dropout": [0.1, 0.2, 0.3],
-    "mask_prob": [0.10, 0.15, 0.20]
+    "mask_prob": [0.10, 0.15, 0.20] # kerem
 }
 
 def run_ablation(target_param, output_path="results/ablation"):

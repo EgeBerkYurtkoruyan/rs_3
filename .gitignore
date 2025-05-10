@@ -11,4 +11,3 @@ models/*.pt
 *.png
 *.jpeg
 *.pkl
-*.json
