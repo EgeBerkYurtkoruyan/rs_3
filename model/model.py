@@ -27,12 +27,11 @@ class BERT4Rec(nn.Module):
         self.output = nn.Linear(embed_dim, num_items + 2)
 
     def forward(self, x, mask):
-        # x: [batch_size, seq_len]
         seq_len = x.size(1)
-        positions = torch.arange(0, seq_len).unsqueeze(0).to(x.device)  # shape: [1, seq_len]
+        positions = torch.arange(0, seq_len).unsqueeze(0).to(x.device)  # [1, seq_len]
 
         x = self.item_embedding(x) + self.pos_embedding(positions)
         x = self.norm(self.dropout(x))
         x = self.transformer(x, src_key_padding_mask=mask)
 
-        return self.output(x)  # shape: [batch_size, seq_len, num_items + 2]
+        return self.output(x)  # [batch_size, seq_len, num_items + 2]

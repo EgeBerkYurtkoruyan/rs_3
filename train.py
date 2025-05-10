@@ -9,7 +9,7 @@ from tqdm import tqdm
 from model.model import BERT4Rec
 from utils.evaluate import evaluate_model
 from utils.config import (
-    MASK_PROB, EPOCHS, PATIENCE, LR, MODEL_SAVE_PATH,
+    MASK_PROB, EPOCHS, PATIENCE, LR,
     SEQ_LEN, PROCESSED_DIR, BATCH_SIZE
 )
 
@@ -20,12 +20,12 @@ def pad_sequence(seq, max_len):
         return seq[-max_len:]
     return [0] * (max_len - len(seq)) + seq
 
-def mask_items(seqs, num_items, mask_prob):
+def mask_items(seqs, num_items, mask_prob, seq_len=SEQ_LEN):
     MASK_ID = num_items + 1
     masked_seqs, labels = [], []
 
     for seq in seqs:
-        padded = pad_sequence(seq, SEQ_LEN)
+        padded = pad_sequence(seq, seq_len)
         masked, label = [], []
         for item in padded:
             if item != 0 and random.random() < mask_prob:
@@ -39,14 +39,14 @@ def mask_items(seqs, num_items, mask_prob):
 
     return torch.LongTensor(masked_seqs), torch.LongTensor(labels)
 
-def evaluate_val_loss(model, val_data, criterion, num_items, device, mask_prob):
+def evaluate_val_loss(model, val_data, criterion, num_items, device, mask_prob, seq_len):
     model.eval()
     total_loss = 0
     with torch.no_grad():
         loop = tqdm(range(0, len(val_data), BATCH_SIZE), desc="Validating", leave=False)
         for i in loop:
             batch = val_data[i:i+BATCH_SIZE]
-            masked_inputs, labels = mask_items(batch, num_items, mask_prob)
+            masked_inputs, labels = mask_items(batch, num_items, mask_prob, seq_len=seq_len)
             masked_inputs, labels = masked_inputs.to(device), labels.to(device)
             mask = (masked_inputs == 0)
             logits = model(masked_inputs, mask)
@@ -58,28 +58,38 @@ def evaluate_val_loss(model, val_data, criterion, num_items, device, mask_prob):
 
     return total_loss / len(val_data)
 
-def train_model(model, train_data, val_data, num_items, device, mask_prob=MASK_PROB):
+def train_model(model, train_data, val_data, num_items, device, mask_prob=MASK_PROB, model_name=None,
+                result_name=None, epochs=EPOCHS, seq_len=SEQ_LEN):
     optimizer = optim.Adam(model.parameters(), lr=LR)
     criterion = nn.CrossEntropyLoss(ignore_index=0)
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer,
-        mode='max'
-    )
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max')
     model.to(device)
+
+    print("Training model with the following configuration:")
+    print(f"  Embedding Dim  : {model.item_embedding.embedding_dim}")
+    print(f"  Num Layers     : {len(model.transformer.layers)}")
+    print(f"  Num Heads      : {model.transformer.layers[0].self_attn.num_heads}")
+    print(f"  Dropout        : {model.dropout.p}")
+    print(f"  Masking Prob   : {mask_prob}")
+    print(f"  Learning Rate  : {LR}")
+    print(f"  Batch Size     : {BATCH_SIZE}")
+    print(f"  Epochs         : {epochs}")
+    print(f"  Patience       : {PATIENCE}")
+    print(f"  Seq Length     : {seq_len}")
 
     history = []
     best_ndcg = 0.0
     patience_counter = 0
 
-    for epoch in range(1, EPOCHS + 1):
+    for epoch in range(1, epochs + 1):
         model.train()
         train_loss = 0
         random.shuffle(train_data)
 
-        loop = tqdm(range(0, len(train_data), 128), desc=f"Epoch {epoch}")
+        loop = tqdm(range(0, len(train_data), BATCH_SIZE), desc=f"Epoch {epoch}")
         for i in loop:
-            batch = train_data[i:i+128]
-            masked_inputs, labels = mask_items(batch, num_items, mask_prob)
+            batch = train_data[i:i+BATCH_SIZE]
+            masked_inputs, labels = mask_items(batch, num_items, mask_prob, seq_len=seq_len)
             masked_inputs, labels = masked_inputs.to(device), labels.to(device)
             mask = (masked_inputs == 0)
             logits = model(masked_inputs, mask)
@@ -93,7 +103,7 @@ def train_model(model, train_data, val_data, num_items, device, mask_prob=MASK_P
             current_lr = optimizer.param_groups[0]['lr']
             loop.set_postfix(loss=loss.item(), lr=current_lr)
 
-        val_loss = evaluate_val_loss(model, val_data, criterion, num_items, device, mask_prob)
+        val_loss = evaluate_val_loss(model, val_data, criterion, num_items, device, mask_prob, seq_len=seq_len)
         val_metrics = evaluate_model(model, val_data, num_items, device, k_values=[10])
         val_ndcg = val_metrics['ndcg'][10]
         val_recall = val_metrics['recall'][10]
@@ -116,16 +126,20 @@ def train_model(model, train_data, val_data, num_items, device, mask_prob=MASK_P
         if val_ndcg > best_ndcg + 1e-4:
             best_ndcg = val_ndcg
             patience_counter = 0
-            torch.save(model.state_dict(), MODEL_SAVE_PATH)
+            if model_name:
+                os.makedirs("models", exist_ok=True)
+                torch.save(model.state_dict(), os.path.join("models", model_name))
         else:
             patience_counter += 1
             if patience_counter >= PATIENCE:
                 print("Early stopping triggered by NDCG@10.")
                 break
 
-    os.makedirs(os.path.dirname(MODEL_SAVE_PATH), exist_ok=True)
-    with open('results/model_performance.json', 'w') as f:
+    os.makedirs("results", exist_ok=True)
+    with open(os.path.join("results", result_name), 'w') as f:
         json.dump(history, f, indent=2)
+
+    return history
 
 def load_processed_data(processed_dir):
     with open(os.path.join(processed_dir, 'train_seqs.pkl'), 'rb') as f:
@@ -146,5 +160,5 @@ if __name__ == "__main__":
 
     train_seqs, val_seqs, test_seqs, num_items = load_processed_data(PROCESSED_DIR)
     model = BERT4Rec(num_items=num_items)
-
-    train_model(model, train_seqs, val_seqs, num_items, device)
+    exp_name = "config_1.json"
+    results = train_model(model, train_seqs, val_seqs, num_items, device, result_name=exp_name, seq_len=50)
