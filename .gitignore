@@ -11,3 +11,5 @@ models/*.pt
 *.png
 *.jpeg
 *.pkl
+
+venv/
